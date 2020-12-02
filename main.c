@@ -13,7 +13,7 @@ static inline uint32_t read_adc(unsigned char pin);
 static unsigned threshold = 128;
 static uint8_t measure = 0;
 
-uint32_t adc_result;
+uint32_t adc_result = -1;
 char adc_str[5];
 
 ISR(ADC_vect)
@@ -38,16 +38,15 @@ ISR(TIMER0_COMPA_vect)
 
 static inline uint32_t read_adc(unsigned char pin)
 {
-    TIMSK0 &= (0xff ^ (0x01 << OCIE0A));	// Disable timer interrupt
-
     ADMUXA = pin;							// ADC<pin> used as input
     ADCSRA = 0x88;							// ADC enabled, ADC interrupts enabled
     ADCSRA |= (0x01 << ADSC);				// Start ADC
 
-    sleep_mode();							// Wait until ADC interrupt
+    adc_result = -1;
+    while (adc_result == -1)
+        sleep_mode();						// Wait until ADC interrupt
 
     ADCSRA = 0x00;							// ADC disabled
-    TIMSK0 |= (0x01 << OCIE0A);				// Re-enable timer interrupt
 
     return adc_result;
 }
