@@ -6,20 +6,35 @@
 #include <stdlib.h>
 #include <string.h>
 
-EMPTY_INTERRUPT(TIMER0_COMPA_vect)
-
 static inline void usart_transmit(unsigned char data);
+static inline void usart_println(char *str, unsigned len);
+static inline uint32_t read_adc(unsigned char pin);
+
+static unsigned threshold = 128;
+static uint8_t measure = 0;
 
 uint32_t adc_result;
+char adc_str[5];
+
 ISR(ADC_vect)
 {
     adc_result = ADCL;
-   	adc_result |= ((uint32_t)ADCH << 8);
+    adc_result |= ((uint32_t)ADCH << 8);
+}
+
+ISR(TIMER1_COMPA_vect)
+{
+    measure = 1;
+}
+
+ISR(TIMER0_COMPA_vect)
+{
+    PORTA = 0;
+    TCCR0B = 0x00;
+    measure = 0;
 }
 
 #define F_CPU 128000  // 128kHz
-
-char adc_str[5];
 
 static inline uint32_t read_adc(unsigned char pin)
 {
@@ -31,7 +46,6 @@ static inline uint32_t read_adc(unsigned char pin)
 
     sleep_mode();							// Wait until ADC interrupt
 
-    //ADCSRA &= (0xff ^ (0x01 << ADSC));		// Stop ADC
     ADCSRA = 0x00;							// ADC disabled
     TIMSK0 |= (0x01 << OCIE0A);				// Re-enable timer interrupt
 
@@ -40,30 +54,30 @@ static inline uint32_t read_adc(unsigned char pin)
 
 static inline void usart_init(unsigned baud)
 {
-	// Violates the datasheet instructions
-	// by not subtracting 1, but works
-	baud = F_CPU / (16*baud); // - 1;
+    // Violates the datasheet instructions
+    // by not subtracting 1, but works
+    baud = F_CPU / (16*baud); // - 1;
 
-	UBRR0H = (unsigned char)(baud >> 8);
-	UBRR0L = (unsigned char)baud;
+    UBRR0H = (unsigned char)(baud >> 8);
+    UBRR0L = (unsigned char)baud;
 
-	UCSR0A = 0;
-	UCSR0B = (1 << TXEN0);
-	UCSR0C = (1 << USBS0) | (3 << UCSZ00);
+    UCSR0A = 0;
+    UCSR0B = (1 << TXEN0);
+    UCSR0C = (1 << USBS0) | (3 << UCSZ00);
 }
 
 static inline void usart_transmit(unsigned char data)
 {
-	while (!(UCSR0A & (1 << UDRE0)));
-	UDR0 = data;
+    while (!(UCSR0A & (1 << UDRE0)));
+    UDR0 = data;
 }
 
 static inline void usart_println(char *str, unsigned len)
 {
-	for (unsigned i = 0; i < len; i++)
-		usart_transmit(str[i]);
-	usart_transmit('\r');
-	usart_transmit('\n');
+    for (unsigned i = 0; i < len; i++)
+        usart_transmit(str[i]);
+    usart_transmit('\r');
+    usart_transmit('\n');
 }
 
 static inline void setup_system()
@@ -75,38 +89,45 @@ static inline void setup_system()
     wdt_disable();
 
     TCCR0A = 0x02;              // CTC mode for timer0
-    TIMSK0 = (0x01 << OCIE0A);  // Enable compare interrupt
-    TCCR0B = (0x5 << CS00);     // Select clock mode; clock prescaler clk/1024
-    OCR0A = 128;                // Compare value; 128/(128kHz/1024) = 1s
+    TIMSK0 = (0x01 << OCIE0A);  // Enable compare interrupt A
+    TCCR0B = 0x00;				// Disable timer0
+    OCR0A = 255;                // Compare value; 255/(128kHz/1024) = 2s
 
-	ADMUXB = 0x00;		// Vcc as reference voltage for ADC, gain=1
+    TCCR1A = 0x00;
+    TIMSK1 = (0x01 << OCIE1A);  // Enable compare interrupt A
+    TCCR1B = ((0x01 << WGM12) | 0x05);		// Enable timer1, clock prescaler 1024
+    OCR1AH = (1250 >> 8);		// 1250/(128kHz/1024) = 10s
+    OCR1AL = (1250 & (0xff));
+
+    ADMUXB = 0x00;		// Vcc as reference voltage for ADC, gain=1
 
     sei();
 }
 
 int main(void)
 {
-	setup_system();
-	usart_init(1200);
+    setup_system();
+    usart_init(1200);
 
-	static unsigned threshold = 128;
+    while (1)
+    {
+        sleep_mode();
 
-	while (1)
-	{
-		for (int i = 0; i < 8; i++)
-			sleep_mode();
+        if (measure) {
+            PORTA = (1 << 7);
+            uint32_t analog = read_adc(0);
+            itoa(analog, adc_str, 10);
+            usart_println(adc_str, strlen(adc_str));
 
-		PORTA = (1 << 7);
-		uint32_t analog = read_adc(0);
-		itoa(analog, adc_str, 10);
-		usart_println(adc_str, strlen(adc_str));
-
-		if (analog < threshold) {
-			PORTA = (1 << 3);
-			for (int i = 0; i < 2; i++)
-				sleep_mode();
-		}
-		PORTA = 0;
-	}
+            if (analog < threshold) {
+                PORTA = (1 << 3);
+                TCNT0 = 0;
+                TCCR0B = 0x05;     // Start timer0; clock prescaler 1024
+            }
+            else {
+                PORTA = 0x00;
+            }
+        }
+    }
 }
 
